@@ -6,27 +6,36 @@ KV260 上の YOLOv3 系検出器の mAP 評価ツール。
 
 ## 使い方
 
-### 1. KV260 でログを取る
+### 1. KV260 でビルド・実行
 
-テンプレート（`-DSAVE_LOG=1` でコンパイル）を KV260 上で実行し、
-最後まで走らせて `detection_log.txt` を出力する。
-
-### 2. ログを WSL2 に転送
+テンプレートを KV260 に転送してビルド・実行する。
+`-DSAVE_LOG=1` を付けてコンパイルすること。
 
 ```bash
-scp kv260_ip:~/work/detection_log.txt logs/my_log.txt
+# WSL2 → KV260 へ転送
+scp -r kv260/ 192.168.1.100:/home/root/Vitis-AI/examples/VART/yolov3
+
+# KV260 上でビルド・実行
+ssh root@192.168.1.100
+cd /home/root/Vitis-AI/examples/VART/yolov3
+make.sh <cpp file名>
+./yolov3 <xmodelのモデル名> ../video/adas.webm
+# → detection_log.txt が生成される（最後まで走らせること）
 ```
 
-### 3. mAP を計算
+### 2. ログの評価（WSL2）
 
 ```bash
+# KV260 → WSL2 へログ転送
+scp root@192.168.1.100:/home/root/Vitis-AI/examples/VART/yolov3/detection_log.txt logs/student_A.txt <-- log名は自分で変えたい名前に変更する。
+
 # 1 本のログを評価
-python eval/eval_log.py logs/my_log.txt
+python eval/eval_log.py logs/student_A.txt
 
 # 複数ログを一覧表にする
 python eval/report.py logs/*.txt
 
-# Excel 出力
+# TSV / Excel 出力
 python eval/report.py logs/*.txt --tsv report.tsv --xlsx report.xlsx
 ```
 
