@@ -1,0 +1,4 @@
+__pycache__/
+eval/work/
+eval/mAP/input/
+*.pyc

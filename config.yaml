@@ -1,0 +1,128 @@
+# config.yaml — GT 生成と評価の共通設定
+#
+# このファイルは擬似 GT 生成 (gt/make_gt.py, gt/mask_tool.py) と
+# 評価 (eval/eval_log.py, eval/report.py)、フレーム展開 (tools/extract_frames.py)
+# の両方が読む「唯一の取り決め」。GPU サーバーと WSL2 の両側で同じコミットを
+# 共有し、設定のずれを防ぐ。数値を変えたら、その GT がどの条件で作られたかが
+# git 履歴に残る。
+
+# ── パス ──────────────────────────────────────────────────────────────
+# リポジトリルートからの相対パス。
+paths:
+  video: video/adas.webm          # 評価動画 (VP9, 512x256, 60fps, 1616 フレーム)
+  frames: frames                  # 展開した連番 PNG の置き場 (コミットしない)
+  # weights / cache は容量が大きく、/ と /home の空きが少ないため /data2 に置く
+  # (conda 実行時。絶対パスなので gt_utils.abspath はそのまま使う)。
+  weights: /data2/goto_data/workspace/adas-gt/weights    # 検出器の学習済み重み (コミットしない)
+  cache: /data2/goto_data/workspace/adas-gt/cache/gt     # 検出器ごとの生検出キャッシュ (コミットしない)
+  ground_truth: ground-truth      # 生成・修正済み GT の Cartucho 形式 txt (コミットする)
+  map_tool: eval/mAP              # Cartucho mAP ツールの場所
+  # mAP ツールの入出力 (eval_log.py が書き込む)
+  map_input: eval/mAP/input       # ground-truth/ と detection-results/ の親
+
+# ── 動画の仕様 (確認用。extract_frames.py が実測と照合) ────────────────
+video:
+  width: 512
+  height: 256
+  fps: 60
+  n_frames: 1616                  # ffprobe 実カウント値。実測が違えば警告する
+  frame_pad: 5                    # フレーム番号のゼロ埋め桁数 (frame_00000)
+
+# ── クラス定義 ────────────────────────────────────────────────────────
+classes:
+  # 評価対象クラス。この順序を Cartucho の集計順に使ってよい。
+  eval: [car, person, bicycle]
+
+  # 学生 xmodel の type 番号 → クラス名 (utils.h の classificationCnt = 3)。
+  # 検出ログの cls はこの type 番号なので、評価スクリプトが名前へ変換する。
+  type_to_name:
+    0: person
+    1: bicycle
+    2: car
+
+  # GT 生成に使う COCO 検出器の出力 → 評価クラスへの統合。
+  # ここに無い COCO クラスは捨てる。
+  coco_to_eval:
+    car: car
+    truck: car
+    bus: car
+    person: person
+    bicycle: bicycle
+    motorcycle: bicycle
+
+# ── 除外領域 (ボンネット・DEEPHI 透かし) ──────────────────────────────
+# 中心がこの領域に入る箱は GT・検出結果の両方から捨てる。
+# 現物合わせで決める (mask_tool.py で PNG を出して調整)。初期値は暫定。
+# type: hline  … y 以上を全部除外 (水平線で下を切る)
+# type: poly   … points (元画像ピクセル座標の頂点列) の内側を除外
+mask:
+  type: hline
+  y: 190                          # 確定 (mask_tool.py で現物合わせして決定)
+  # poly を使う場合の例:
+  # type: poly
+  # points: [[0, 190], [512, 190], [512, 256], [0, 256]]
+
+# ── 擬似 GT 生成 (make_gt.py) ─────────────────────────────────────────
+gt:
+  # 検出器バックエンド。WBF でアンサンブルする。差し替え可能な作り。
+  # 本命: Co-DETR (Swin-L, O365→COCO) + YOLO11x。DETR 系を主にして
+  # 評価対象 YOLOv3 と誤り方が似ないようにする。
+  backend: [codetr, yolo11]
+  wbf:
+    # conf_type=max: クラスタ内の最大スコアを採る。avg は融合スコアを箱数とモデル数で
+    # 割り下げ、両モデルが出した明確な車でも conf_thr で落ちるため使わない (pseudo-GT は
+    # 再現率重視)。
+    conf_type: max
+    iou_thr: 0.55
+    skip_box_thr: 0.001
+    # WBF 重み。conf_type=max ではスコアが weights.max() で割られるので、重みに差を付けると
+    # 重みの小さいモデル単独の検出だけ不当にスコアが下がる (例: 2:1 だと YOLO 単独 0.9 → 0.45)。
+    # 信頼度を対等に扱うため 1:1 にする。Co-DETR 重視は「主検出器・高精度な方」で担保する。
+    weights:
+      codetr: 1.0
+      yolo11: 1.0
+
+  # 検出器の config / 重み。着手時に mmdetection v3.3.0 で確認して埋める。
+  detectors:
+    codetr:
+      # mmdetection v3.3.0 の projects/CO-DETR で確認済み (Swin-L, O365→COCO, 64.1 AP)。
+      # clone 先 (PYTHONPATH にも通す)。conda 実行では setup_env.sh が /data2 に clone する。
+      # (Docker に戻す場合は /workspace/mmdetection に変える)
+      mmdet_root: /data2/goto_data/workspace/adas-gt/src/mmdetection
+      # config は mmdet_root からの相対パス。
+      config: projects/CO-DETR/configs/codino/co_dino_5scale_swin_l_16xb1_16e_o365tococo.py
+      # checkpoint は get_weights.sh が weights/ に落とすファイル名。
+      checkpoint: co_dino_5scale_swin_large_16e_o365tococo-614254c9.pth
+    yolo11:
+      weights: yolo11x.pt
+
+  # 拡大推論。2 倍に拡大して推論し、座標を元の 512x256 に戻す。
+  upscale: 2
+  tile:
+    enabled: false                # タイル推論 (重なりあり分割→統合)。必要なら有効化
+    overlap: 0.2
+
+  conf_thr: 0.5                   # GT 採用の信頼度しきい値 (初期値)
+  min_height: 12                  # この高さ (px) 未満の箱は difficult フラグを付ける
+
+  # 手動修正の記録。--stage post の最後に適用される (GT を作り直しても消えない)。
+  manual_fixes: gt/manual_fixes.yaml
+
+  # 時間方向の補完 (追跡で短い途切れを補間)。
+  track:
+    enabled: true
+    tracker: bytetrack            # ultralytics 付属 ByteTrack を想定
+    max_gap: 5                    # この長さ以下の途切れを補間する
+
+# ── 学生ログの既定条件 (eval_log.py が検査・警告に使う) ────────────────
+# 学生は utils.h の CONF / NMS_THRESHOLD を変えない。ログヘッダの値が
+# これと違えば eval_log.py が警告する。
+student_defaults:
+  CONF: 0.3
+  NMS_THRESHOLD: 0.45
+
+# ── 評価 (eval_log.py) ────────────────────────────────────────────────
+eval:
+  # mAP_display の逆行・hold 処理は CLAUDE.md 第二段階のルールに従う
+  # (追加パラメータは無い)。ここには mAP 集計側の設定を置く。
+  iou_threshold: 0.75             # mAP@0.75 (0.5 より厳しく、表示間引きの影響が出やすい)
