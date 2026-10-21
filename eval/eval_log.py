@@ -416,6 +416,54 @@ def eval_single_iou(records, n_frames, type_to_class, mask_cfg, prefix, digits,
     return result
 
 
+def plot_ap_bar(results, iou, logfile="", title_extra=""):
+    """クラス別 AP の棒グラフをポップアップ表示する。"""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("WARNING: matplotlib が無いためグラフを表示できません", file=sys.stderr)
+        return
+
+    per_class = results.get("per_class", {})
+    if not per_class:
+        return
+
+    classes = sorted(per_class.keys())
+    aps = [per_class[c] for c in classes]
+    # mAP2 = (car + person) / 2
+    ap_car = per_class.get("car", 0)
+    ap_person = per_class.get("person", 0)
+    mAP2 = (ap_car + ap_person) / 2.0
+
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    bars = ax.barh(classes, aps, color="royalblue")
+    for bar, ap in zip(bars, aps):
+        ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
+                f"{ap:.1f}%", va="center", fontsize=10)
+    ax.set_xlim(0, 105)
+    ax.set_xlabel("Average Precision (%)")
+    label = os.path.splitext(os.path.basename(logfile))[0] if logfile else ""
+    ax.set_title(f"mAP2_display = {mAP2:.2f}%  (car+person)/2  (IoU {iou}){title_extra}")
+    if label:
+        fig.text(0.5, 0.01, label, ha="center", fontsize=9, color="gray")
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
+    png_name = f"{label}.png" if label else "mAP_display.png"
+    png_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work", png_name)
+    os.makedirs(os.path.dirname(png_path), exist_ok=True)
+    fig.savefig(png_path, dpi=150)
+    plt.close()
+    print(f"\n棒グラフを保存しました: {png_path}")
+    # ビューアで開く
+    import subprocess as _sp
+    import platform
+    if platform.system() == "Linux":
+        _sp.Popen(["xdg-open", png_path], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    elif platform.system() == "Darwin":
+        _sp.Popen(["open", png_path])
+    else:
+        _sp.Popen(["start", png_path], shell=True)
+
+
 def print_results(results_by_iou, primary_iou, mode):
     """IoU ごとの結果を表示する。primary_iou を主指標として先に出す。"""
     iou_order = [primary_iou] + [k for k in sorted(results_by_iou) if k != primary_iou]
@@ -568,6 +616,10 @@ def main():
              "(例: --scale-from 416x208)",
     )
     parser.add_argument(
+        "--no-plot", action="store_true",
+        help="棒グラフのポップアップ表示を抑制する",
+    )
+    parser.add_argument(
         "--gen-dummy", action="store_true",
         help="テスト用ダミーログと GT を生成して評価する",
     )
@@ -670,6 +722,15 @@ def main():
 
     # 結果表示
     print_results(results_by_iou, primary_iou, args.mode)
+
+    # 主指標の mAP_display の棒グラフをポップアップ表示
+    if not args.no_plot:
+        r = results_by_iou.get(primary_iou, {})
+        if "mAP_display" in r:
+            plot_ap_bar(r["mAP_display"], primary_iou, logfile=args.logfile)
+        elif "mAP_frame" in r:
+            plot_ap_bar(r["mAP_frame"], primary_iou, logfile=args.logfile, title_extra=" (frame)")
+
 
 
 if __name__ == "__main__":
