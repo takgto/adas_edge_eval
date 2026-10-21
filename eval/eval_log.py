@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """detection_log.txt から mAP_frame と mAP_display を計算する。
 
-IoU 0.75 を主指標、0.5 を参考値として両方出す。
+IoU 0.5 を主指標、0.75 を参考値として両方出す。
 --iou で単一の IoU だけ計算することもできる。
 
 使い方:
-  python eval_log.py detection_log.txt                    # IoU 0.75 (主) + 0.5 (参考)
+  python eval_log.py detection_log.txt                    # IoU 0.5 (主) + 0.75 (参考)
   python eval_log.py detection_log.txt --iou 0.75         # IoU 0.75 のみ
   python eval_log.py detection_log.txt --mode frame       # mAP_frame のみ
   python eval_log.py detection_log.txt --scale-from 416x208  # 座標を 512x256 にスケール
@@ -416,43 +416,105 @@ def eval_single_iou(records, n_frames, type_to_class, mask_cfg, prefix, digits,
     return result
 
 
-def plot_ap_bar(results, iou, logfile="", title_extra=""):
-    """クラス別 AP の棒グラフをポップアップ表示する。"""
+def plot_ap_dual(results_by_iou, primary_iou, header, logfile="", n_records=0):
+    """IoU 0.5 と 0.75 のクラス別 AP 棒グラフを左右に並べて表示・保存する。"""
     try:
+        import warnings
+        warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
         import matplotlib.pyplot as plt
     except ImportError:
         print("WARNING: matplotlib が無いためグラフを表示できません", file=sys.stderr)
         return
 
-    per_class = results.get("per_class", {})
-    if not per_class:
+    ref_iou = 0.75 if primary_iou == 0.5 else 0.5
+    iou_list = [primary_iou, ref_iou]
+    iou_labels = {primary_iou: "primary", ref_iou: "ref"}
+
+    # 両 IoU の mAP_display（なければ mAP_frame）を取得
+    plot_data = []
+    for iou in iou_list:
+        r = results_by_iou.get(iou, {})
+        if "mAP_display" in r:
+            plot_data.append((iou, r["mAP_display"], ""))
+        elif "mAP_frame" in r:
+            plot_data.append((iou, r["mAP_frame"], " (frame)"))
+        else:
+            plot_data.append((iou, None, ""))
+
+    if not any(d[1] for d in plot_data):
         return
 
-    classes = sorted(per_class.keys())
-    aps = [per_class[c] for c in classes]
-    # mAP2 = (car + person) / 2
-    ap_car = per_class.get("car", 0)
-    ap_person = per_class.get("person", 0)
-    mAP2 = (ap_car + ap_person) / 2.0
-
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    bars = ax.barh(classes, aps, color="royalblue")
-    for bar, ap in zip(bars, aps):
-        ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
-                f"{ap:.1f}%", va="center", fontsize=10)
-    ax.set_xlim(0, 105)
-    ax.set_xlabel("Average Precision (%)")
+    # ヘッダ情報
+    model = header.get("MODEL", "")
+    input_size = header.get("INPUT", "")
+    show_every = header.get("SHOW_EVERY", "")
+    fps = header.get("FPS", "")
     label = os.path.splitext(os.path.basename(logfile))[0] if logfile else ""
-    ax.set_title(f"mAP2_display = {mAP2:.2f}%  (car+person)/2  (IoU {iou}){title_extra}")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+
+    for idx, (iou, results, extra) in enumerate(plot_data):
+        ax = axes[idx]
+        if results is None:
+            ax.set_visible(False)
+            continue
+
+        per_class = results.get("per_class", {})
+        classes = sorted(per_class.keys())
+        aps = [per_class.get(c, 0) for c in classes]
+
+        ap_car = per_class.get("car", 0)
+        ap_person = per_class.get("person", 0)
+        mAP2 = (ap_car + ap_person) / 2.0
+
+        bars = ax.barh(classes, aps, color="royalblue")
+        for bar, ap, cls in zip(bars, aps, classes):
+            txt = f"{ap:.1f}%"
+            if cls == "bicycle":
+                txt += "  (n/a)"
+            ax.text(bar.get_width() + 1, bar.get_y() + bar.get_height() / 2,
+                    txt, va="center", fontsize=9)
+        ax.set_xlim(0, 115)
+        ax.set_xlabel("Average Precision (%)")
+        ax.set_title(f"IoU {iou} ({iou_labels[iou]})\nmAP2 = {mAP2:.1f}%  (car+person)/2{extra}",
+                     fontsize=10)
+
+    # 上部にヘッダ情報
+    info_parts = []
+    if model:
+        info_parts.append(f"Model: {model}")
+    if input_size:
+        info_parts.append(f"Input: {input_size}")
+    ninfer = header.get("NINFER", "")
+    cap = header.get("CAP", "")
+    if ninfer:
+        info_parts.append(f"NINFER: {ninfer}")
+    if cap:
+        info_parts.append(f"CAP: {cap}")
+    if show_every:
+        info_parts.append(f"SE: {show_every}")
+    if fps:
+        info_parts.append(f"FPS: {fps}")
+    if n_records:
+        info_parts.append(f"N: {n_records}")
     if label:
-        fig.text(0.5, 0.01, label, ha="center", fontsize=9, color="gray")
-    plt.tight_layout(rect=[0, 0.06, 1, 1])
-    png_name = f"{label}.png" if label else "mAP_display.png"
-    png_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work", png_name)
+        info_parts.append(label)
+    fig.suptitle("   ".join(info_parts), fontsize=9, color="gray", y=0.98)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+
+    # PNG 保存（ログと同じディレクトリに <ログ名>_map.png）
+    if logfile:
+        log_dir = os.path.dirname(os.path.abspath(logfile))
+        png_name = os.path.splitext(os.path.basename(logfile))[0] + "_map.png"
+        png_path = os.path.join(log_dir, png_name)
+    else:
+        png_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work", "mAP_display.png")
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
     fig.savefig(png_path, dpi=150)
     plt.close()
     print(f"\n棒グラフを保存しました: {png_path}")
+
     # ビューアで開く
     import subprocess as _sp
     import platform
@@ -464,6 +526,12 @@ def plot_ap_bar(results, iou, logfile="", title_extra=""):
         _sp.Popen(["start", png_path], shell=True)
 
 
+def _mAP2(r):
+    """per_class から mAP2 (car+person)/2 を計算する。"""
+    pc = r.get("per_class", {})
+    return (pc.get("car", 0) + pc.get("person", 0)) / 2.0
+
+
 def print_results(results_by_iou, primary_iou, mode):
     """IoU ごとの結果を表示する。primary_iou を主指標として先に出す。"""
     iou_order = [primary_iou] + [k for k in sorted(results_by_iou) if k != primary_iou]
@@ -472,56 +540,57 @@ def print_results(results_by_iou, primary_iou, mode):
         res = results_by_iou.get(iou)
         if not res:
             continue
-        is_primary = (iou == primary_iou)
-        tag = "" if is_primary else " [参考]"
+        tag = "" if iou == primary_iou else " [ref]"
 
         if mode in ("both", "frame") and "mAP_frame" in res:
             r = res["mAP_frame"]
             print(f"\n=== mAP_frame (IoU={iou}){tag} ===")
-            print(f"  mAP = {r['mAP']:.2f}%")
+            print(f"  mAP2 (car+person)/2 = {_mAP2(r):.2f}%")
             for cls, ap in sorted(r["per_class"].items()):
                 print(f"    {cls}: AP = {ap:.2f}%")
+            print(f"  mAP (3cls, ref) = {r['mAP']:.2f}%")
 
         if mode in ("both", "display") and "mAP_display" in res:
             r = res["mAP_display"]
             stats = res.get("display_stats", {})
             print(f"\n=== mAP_display (IoU={iou}){tag} ===")
             if stats:
-                print(f"  有効表示数: {stats['n_valid']}, "
-                      f"無効（逆行）: {stats['n_inversions']}, "
-                      f"平均保持長: {stats['avg_hold']:.1f} フレーム")
-            print(f"  mAP = {r['mAP']:.2f}%")
+                print(f"  valid: {stats['n_valid']}, "
+                      f"inversions: {stats['n_inversions']}, "
+                      f"avg hold: {stats['avg_hold']:.1f} frames")
+            print(f"  mAP2 (car+person)/2 = {_mAP2(r):.2f}%")
             for cls, ap in sorted(r["per_class"].items()):
                 print(f"    {cls}: AP = {ap:.2f}%")
+            print(f"  mAP (3cls, ref) = {r['mAP']:.2f}%")
 
-    # まとめ
-    print(f"\n=== まとめ ===")
-    header = "  {:>10s}".format("")
+    # まとめ (mAP2 ベース)
+    print(f"\n=== summary (mAP2) ===")
+    header = "  {:>12s}".format("")
     for iou in iou_order:
-        tag = "" if iou == primary_iou else " [参考]"
+        tag = "" if iou == primary_iou else " [ref]"
         header += f"  IoU={iou}{tag:>5s}"
     print(header)
 
-    for key, label in [("mAP_frame", "mAP_frame"), ("mAP_display", "mAP_display")]:
+    for key, label in [("mAP_frame", "mAP2_frame"), ("mAP_display", "mAP2_display")]:
         if not any(key in results_by_iou.get(i, {}) for i in iou_order):
             continue
-        line = f"  {label:>10s}"
+        line = f"  {label:>12s}"
         for iou in iou_order:
             r = results_by_iou.get(iou, {}).get(key)
             if r:
-                line += f"  {r['mAP']:>11.2f}%"
+                line += f"  {_mAP2(r):>11.2f}%"
             else:
                 line += f"  {'---':>12s}"
         print(line)
 
-    # 差（表示損失）
+    # loss (display - frame)
     if mode == "both":
-        line = f"  {'差':>10s}"
+        line = f"  {'loss':>12s}"
         for iou in iou_order:
             res = results_by_iou.get(iou, {})
             if "mAP_frame" in res and "mAP_display" in res:
-                diff = res["mAP_frame"]["mAP"] - res["mAP_display"]["mAP"]
-                line += f"  {diff:>+11.2f}%"
+                loss = _mAP2(res["mAP_display"]) - _mAP2(res["mAP_frame"])
+                line += f"  {loss:>+11.2f}%"
             else:
                 line += f"  {'---':>12s}"
         print(line)
@@ -608,7 +677,7 @@ def main():
     parser.add_argument("--outdir", default=None, help="detection-results の出力先 (default: ./work)")
     parser.add_argument(
         "--iou", type=float, default=None,
-        help="単一の IoU で計算する場合に指定。省略時は 0.75 (主) と 0.5 (参考) の両方を出す",
+        help="単一の IoU で計算する場合に指定。省略時は 0.5 (主) と 0.75 (参考) の両方を出す",
     )
     parser.add_argument(
         "--scale-from", default=None, metavar="WxH",
@@ -640,7 +709,7 @@ def main():
     map_dir = args.map_dir or os.path.join(base, cfg["paths"]["map_tool"])
     outdir = args.outdir or os.path.join(eval_dir, "work")
 
-    # --iou 指定時はその値だけ、省略時は主 (0.75) + 参考 (0.5)
+    # --iou 指定時はその値だけ、省略時は主 (0.5) + 参考 (0.75)
     if args.iou is not None:
         iou_list = [args.iou]
         primary_iou = args.iou
@@ -679,8 +748,6 @@ def main():
     header, records = parse_log(args.logfile)
     print(f"ログ: {args.logfile}")
     print(f"  レコード数: {len(records)}, 期待フレーム数: {n_frames}")
-    if header:
-        print(f"  ヘッダ: {header}")
 
     # 座標スケール補正
     target_w = cfg["video"]["width"]
@@ -723,13 +790,10 @@ def main():
     # 結果表示
     print_results(results_by_iou, primary_iou, args.mode)
 
-    # 主指標の mAP_display の棒グラフをポップアップ表示
+    # 両 IoU の mAP_display の棒グラフをポップアップ表示
     if not args.no_plot:
-        r = results_by_iou.get(primary_iou, {})
-        if "mAP_display" in r:
-            plot_ap_bar(r["mAP_display"], primary_iou, logfile=args.logfile)
-        elif "mAP_frame" in r:
-            plot_ap_bar(r["mAP_frame"], primary_iou, logfile=args.logfile, title_extra=" (frame)")
+        plot_ap_dual(results_by_iou, primary_iou, header,
+                     logfile=args.logfile, n_records=len(records))
 
 
 
