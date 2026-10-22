@@ -516,6 +516,8 @@ def plot_ap_dual(results_by_iou, primary_iou, header, logfile="", n_records=0):
     print(f"\n棒グラフを保存しました: {png_path}")
 
     # ビューアで開く
+    '''
+    # comment out, because xdg-open was not installed in PC for hachison. 
     import subprocess as _sp
     import platform
     if platform.system() == "Linux":
@@ -524,7 +526,7 @@ def plot_ap_dual(results_by_iou, primary_iou, header, logfile="", n_records=0):
         _sp.Popen(["open", png_path])
     else:
         _sp.Popen(["start", png_path], shell=True)
-
+    '''
 
 def _mAP2(r):
     """per_class から mAP2 (car+person)/2 を計算する。"""
